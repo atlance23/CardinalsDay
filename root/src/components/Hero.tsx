@@ -23,7 +23,7 @@ export default function Hero() {
         <>
             <section style={{marginTop: "70px", backgroundImage: "url('https://www.abovealllighting.com/Uploads/202201/PADserieMobilGasStation1.jpg')", backgroundSize: "cover", backgroundPosition: "center center", display: "flex", flexDirection: "row", justifyContent: "center", alignItems: "center"}} className="container-fluid vh-100 p-3">
                 <div style={{backgroundColor: '#FFF', borderRadius: "20px", minHeight: "300px", width: "60%", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center"}} className="score">
-                    <h1 className='text-dark d-flex align-items-center justify-content-center'>Runs Scored: {score}</h1>
+                    <h1 className='text-dark d-flex align-items-center justify-content-center'>Runs Scored: {score >= 6 ? <span style={{color: "#FF0000"}}>{score}</span> : <span style={{color: "#00FF00"}}>{score}</span>}</h1>
                 </div>
             </section>
         </>
