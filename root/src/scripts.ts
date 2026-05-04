@@ -4,6 +4,52 @@ const API_KEY: string = '4ecc6593-08fa-47db-98b9-45a53d8b5e87';
 const BASE_URL: string = 'https://api.balldontlie.io';
 const OFFSET: number = -2;
 
+// Cache configuration
+const CACHE_DURATION_MS: number = 60000; // 1 minute in milliseconds
+
+// --- Cache Interfaces ---
+interface CacheEntry<T> {
+    data: T;
+    timestamp: number;
+}
+
+interface TeamsCache extends CacheEntry<number> {
+    // Team ID cache
+}
+
+interface RunsCache extends CacheEntry<number> {
+    date: string; // Track which date the runs are for
+}
+
+// --- Cache Storage ---
+let teamIdCache: TeamsCache | null = null;
+let runsCache: RunsCache | null = null;
+
+// --- Cache Helper Functions ---
+function isCacheValid<T extends CacheEntry<any>>(cache: T | null): boolean {
+    if (!cache) return false;
+    const now = Date.now();
+    return (now - cache.timestamp) < CACHE_DURATION_MS;
+}
+
+function clearCache(): void {
+    teamIdCache = null;
+    runsCache = null;
+    console.log('Cache cleared');
+}
+
+// Optional: Clear cache after 1 minute automatically
+setInterval(() => {
+    if (teamIdCache && !isCacheValid(teamIdCache)) {
+        teamIdCache = null;
+        console.log('Team ID cache expired');
+    }
+    if (runsCache && !isCacheValid(runsCache)) {
+        runsCache = null;
+        console.log('Runs cache expired');
+    }
+}, CACHE_DURATION_MS);
+
 // Headers including your API key for authentication
 const headers: HeadersInit = {
     'Authorization': API_KEY
@@ -92,10 +138,16 @@ function getDateDaysAgo(daysAgo: number): string {
     return getDateWithOffset(-daysAgo);
 }
 
-// --- Step 1: Get the St. Louis Cardinals team ID ---
+// --- Step 1: Get the St. Louis Cardinals team ID (with caching) ---
 async function getCardinalsTeamId(): Promise<number> {
+    // Check cache first
+    if (isCacheValid(teamIdCache)) {
+        console.log(`Using cached team ID: ${teamIdCache!.data}`);
+        return teamIdCache!.data;
+    }
+    
+    console.log('Cache expired or empty. Fetching team list from API...');
     const url: string = `${BASE_URL}/mlb/v1/teams`;
-    console.log('Fetching team list...');
     
     const response: Response = await fetch(url, { headers });
     if (!response.ok) throw new Error(`Teams API error: ${response.status}`);
@@ -110,14 +162,27 @@ async function getCardinalsTeamId(): Promise<number> {
     );
     
     if (!cardinals) throw new Error('St. Louis Cardinals team not found');
-    console.log(`Found: ${cardinals.display_name} (ID: ${cardinals.id})`);
+    
+    // Store in cache
+    teamIdCache = {
+        data: cardinals.id,
+        timestamp: Date.now()
+    };
+    
+    console.log(`Found and cached: ${cardinals.display_name} (ID: ${cardinals.id})`);
     return cardinals.id;
 }
 
-// --- Step 2: Fetch games and calculate total runs for the Cardinals ---
+// --- Step 2: Fetch games and calculate total runs for the Cardinals (with caching) ---
 async function getCardinalsRunsForDate(teamId: number, date: string): Promise<number> {
+    // Check cache first - only valid if it's for the same date
+    if (isCacheValid(runsCache) && runsCache?.date === date) {
+        console.log(`Using cached runs for ${date}: ${runsCache!.data}`);
+        return runsCache!.data;
+    }
+    
+    console.log(`Cache expired or different date. Fetching games for ${date} from API...`);
     const url: string = `${BASE_URL}/mlb/v1/games?dates[]=${date}&team_ids[]=${teamId}`;
-    console.log(`\nFetching games for ${date}...`);
     
     const response: Response = await fetch(url, { headers });
     if (!response.ok) throw new Error(`Games API error: ${response.status}`);
@@ -126,6 +191,12 @@ async function getCardinalsRunsForDate(teamId: number, date: string): Promise<nu
     
     if (data.data.length === 0) {
         console.log(`No games found for the Cardinals on ${date}.`);
+        // Cache the zero result as well to prevent repeated queries
+        runsCache = {
+            data: 0,
+            timestamp: Date.now(),
+            date: date
+        };
         return 0;
     }
     
@@ -147,7 +218,14 @@ async function getCardinalsRunsForDate(teamId: number, date: string): Promise<nu
         console.log(`Game vs ${opponent}: Cardinals scored ${cardinalsRuns} runs`);
     }
     
-    console.log(`\n🏆 TOTAL RUNS for St. Louis Cardinals on ${date}: ${totalRuns}`);
+    // Store in cache
+    runsCache = {
+        data: totalRuns,
+        timestamp: Date.now(),
+        date: date
+    };
+    
+    console.log(`\n🏆 TOTAL RUNS for St. Louis Cardinals on ${date}: ${totalRuns} (cached for 1 minute)`);
     return totalRuns;
 }
 
@@ -163,6 +241,19 @@ export async function Main(daysOffset: number = OFFSET): Promise<number> {
         console.error('Error:', errorMessage);
         throw new Error(errorMessage);
     }
+}
+
+// Export cache utilities for debugging/monitoring
+export function getCacheStatus(): { teamIdCached: boolean; runsCached: boolean; cacheDurationMs: number } {
+    return {
+        teamIdCached: isCacheValid(teamIdCache),
+        runsCached: isCacheValid(runsCache),
+        cacheDurationMs: CACHE_DURATION_MS
+    };
+}
+
+export function forceClearCache(): void {
+    clearCache();
 }
 
 // Optional: Export individual functions for testing or reuse
