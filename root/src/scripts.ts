@@ -2,7 +2,7 @@
 // You need to sign up for a free API key at https://balldontlie.io
 const API_KEY: string = '4ecc6593-08fa-47db-98b9-45a53d8b5e87';
 const BASE_URL: string = 'https://api.balldontlie.io';
-const OFFSET: number = -2;
+const OFFSET: number = -1;
 
 // Cache configuration
 const CACHE_DURATION_MS: number = 60000; // 1 minute in milliseconds
