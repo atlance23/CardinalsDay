@@ -32,7 +32,7 @@ export default function Hero() {
 
     return (
         <section style={{marginTop: "70px", backgroundImage: "url('https://www.abovealllighting.com/Uploads/202201/PADserieMobilGasStation1.jpg')", backgroundSize: "cover", backgroundPosition: "center center", display: "flex", flexDirection: "row", justifyContent: "center", alignItems: "center"}} className="container-fluid vh-100 p-3">
-            <div style={{backgroundColor: '#FFF', borderRadius: "20px", minHeight: "300px", width: "60%", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center"}} className="score">
+            <div style={{backgroundColor: '#FFF', borderRadius: "20px", minHeight: "300px", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center"}} className="score">
                 {loading ? (
                     <p className='text-dark'>Loading runs...</p>
                 ) : error ? (
