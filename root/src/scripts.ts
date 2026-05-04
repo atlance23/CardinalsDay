@@ -2,6 +2,7 @@
 // You need to sign up for a free API key at https://balldontlie.io
 const API_KEY: string = '4ecc6593-08fa-47db-98b9-45a53d8b5e87';
 const BASE_URL: string = 'https://api.balldontlie.io';
+const OFFSET: number = -2;
 
 // Headers including your API key for authentication
 const headers: HeadersInit = {
@@ -62,51 +63,12 @@ interface GamesResponse {
     };
 }
 
-// --- Helper: Get today's date in YYYY-MM-DD format in CST ---
-function getTodayDate(): string {
-    const today: Date = new Date();
+// --- Core Date Helper: Get date with offset in YYYY-MM-DD format in CST ---
+// daysOffset: -1 for yesterday, -2 for day before yesterday, 0 for today, etc.
+function getDateWithOffset(daysOffset: number = 0): string {
+    const targetDate: Date = new Date();
+    targetDate.setDate(targetDate.getDate() + daysOffset);
     
-    // Get UTC components
-    const utcYear = today.getUTCFullYear();
-    const utcMonth = today.getUTCMonth();
-    const utcDay = today.getUTCDate();
-    const utcHours = today.getUTCHours();
-    const utcMinutes = today.getUTCMinutes();
-    const utcSeconds = today.getUTCSeconds();
-    
-    // CST is UTC-6, CDT is UTC-5
-    // Create a date object representing the UTC time
-    const utcTimestamp = Date.UTC(utcYear, utcMonth, utcDay, utcHours, utcMinutes, utcSeconds);
-    
-    // CST/CDT offset (America/Chicago)
-    // Check if it's daylight saving time (simplified - March to November)
-    const isDST = () => {
-        const marchDST = new Date(Date.UTC(utcYear, 2, 8, 2)); // Second Sunday in March
-        const novemberDST = new Date(Date.UTC(utcYear, 10, 1, 2)); // First Sunday in November
-        const currentUTC = new Date(utcTimestamp);
-        return currentUTC >= marchDST && currentUTC < novemberDST;
-    };
-    
-    const offsetHours = isDST() ? -5 : -6; // CDT: UTC-5, CST: UTC-6
-    const cstTimestamp = utcTimestamp + (offsetHours * 60 * 60 * 1000);
-    const cstDate = new Date(cstTimestamp);
-    
-    const year = cstDate.getUTCFullYear();
-    const month = String(cstDate.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(cstDate.getUTCDate()).padStart(2, '0');
-    
-    return `${year}-${month}-${day}`;
-}
-
-// --- Helper: Get yesterday's date in YYYY-MM-DD format in CST ---
-function getYesterdayDate(): string {
-    const today: Date = new Date();
-    
-    // Create yesterday's date
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
-    
-    // Convert to CST using Intl.DateTimeFormat (much simpler!)
     const formatter = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'America/Chicago',
         year: 'numeric',
@@ -114,7 +76,20 @@ function getYesterdayDate(): string {
         day: '2-digit'
     });
     
-    return formatter.format(yesterday);
+    return formatter.format(targetDate);
+}
+
+// --- Convenience Date Helpers ---
+function getTodayDate(): string {
+    return getDateWithOffset(0);
+}
+
+function getYesterdayDate(): string {
+    return getDateWithOffset(-1);
+}
+
+function getDateDaysAgo(daysAgo: number): string {
+    return getDateWithOffset(-daysAgo);
 }
 
 // --- Step 1: Get the St. Louis Cardinals team ID ---
@@ -140,7 +115,7 @@ async function getCardinalsTeamId(): Promise<number> {
 }
 
 // --- Step 2: Fetch games and calculate total runs for the Cardinals ---
-async function getCardinalsRunsToday(teamId: number, date: string): Promise<number> {
+async function getCardinalsRunsForDate(teamId: number, date: string): Promise<number> {
     const url: string = `${BASE_URL}/mlb/v1/games?dates[]=${date}&team_ids[]=${teamId}`;
     console.log(`\nFetching games for ${date}...`);
     
@@ -154,7 +129,7 @@ async function getCardinalsRunsToday(teamId: number, date: string): Promise<numb
         return 0;
     }
     
-    // Calculate total runs scored by the Cardinals across all games today
+    // Calculate total runs scored by the Cardinals across all games on this date
     let totalRuns: number = 0;
     
     for (const game of data.data) {
@@ -176,12 +151,12 @@ async function getCardinalsRunsToday(teamId: number, date: string): Promise<numb
     return totalRuns;
 }
 
-// --- Main execution for yesterday ---
-export async function Main(): Promise<number> {
+// --- Additional exported functions for flexibility ---
+export async function Main(daysOffset: number = OFFSET): Promise<number> {
     try {
         const teamId: number = await getCardinalsTeamId();
-        const yesterday: string = getYesterdayDate();
-        const totalRuns: number = await getCardinalsRunsToday(teamId, yesterday);
+        const targetDate: string = getDateWithOffset(daysOffset);
+        const totalRuns: number = await getCardinalsRunsForDate(teamId, targetDate);
         return totalRuns;
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
@@ -191,4 +166,11 @@ export async function Main(): Promise<number> {
 }
 
 // Optional: Export individual functions for testing or reuse
-export { getCardinalsTeamId, getCardinalsRunsToday, getTodayDate, getYesterdayDate };
+export { 
+    getCardinalsTeamId, 
+    getCardinalsRunsForDate, 
+    getTodayDate, 
+    getYesterdayDate,
+    getDateDaysAgo,
+    getDateWithOffset
+};
