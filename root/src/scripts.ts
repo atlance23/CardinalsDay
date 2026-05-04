@@ -7,40 +7,83 @@ const OFFSET: number = -2;
 // Cache configuration
 const CACHE_DURATION_MS: number = 60000; // 1 minute in milliseconds
 
-// --- Cache Interfaces ---
-interface CacheEntry<T> {
-    data: T;
-    timestamp: number;
-}
-
-interface TeamsCache extends CacheEntry<number> {
-    // Team ID cache
-}
-
-interface RunsCache extends CacheEntry<number> {
-    date: string; // Track which date the runs are for
-}
-
-// --- Cache Storage ---
-let teamIdCache: TeamsCache | null = null;
-let runsCache: RunsCache | null = null;
+// --- Cache Storage Keys for sessionStorage ---
+const CACHE_KEYS = {
+    TEAM_ID: 'cardinals_team_id',
+    TEAM_ID_TIMESTAMP: 'cardinals_team_id_timestamp',
+    RUNS: 'cardinals_runs',
+    RUNS_TIMESTAMP: 'cardinals_runs_timestamp',
+    RUNS_DATE: 'cardinals_runs_date'
+};
 
 // --- Request Deduplication (Prevents multiple simultaneous requests) ---
 let pendingTeamIdRequest: Promise<number> | null = null;
 let pendingRunsRequest: Promise<number> | null = null;
 let pendingRunsDate: string | null = null;
 
-// --- Cache Helper Functions ---
-function isCacheValid<T extends CacheEntry<any>>(cache: T | null): boolean {
-    if (!cache) return false;
+// --- Cache Helper Functions with sessionStorage ---
+function isCacheValid(timestamp: string | null): boolean {
+    if (!timestamp) return false;
     const now = Date.now();
-    return (now - cache.timestamp) < CACHE_DURATION_MS;
+    return (now - parseInt(timestamp)) < CACHE_DURATION_MS;
+}
+
+function getCachedTeamId(): number | null {
+    const cached = sessionStorage.getItem(CACHE_KEYS.TEAM_ID);
+    const timestamp = sessionStorage.getItem(CACHE_KEYS.TEAM_ID_TIMESTAMP);
+    
+    if (!cached || !timestamp) return null;
+    
+    if (isCacheValid(timestamp)) {
+        console.log(`[CACHE HIT] Using cached team ID: ${cached}`);
+        return parseInt(cached);
+    }
+    
+    console.log('[CACHE EXPIRED] Team ID cache expired');
+    return null;
+}
+
+function setCachedTeamId(teamId: number): void {
+    sessionStorage.setItem(CACHE_KEYS.TEAM_ID, teamId.toString());
+    sessionStorage.setItem(CACHE_KEYS.TEAM_ID_TIMESTAMP, Date.now().toString());
+    console.log(`[CACHED] Team ID: ${teamId}`);
+}
+
+function getCachedRuns(date: string): number | null {
+    const cached = sessionStorage.getItem(CACHE_KEYS.RUNS);
+    const timestamp = sessionStorage.getItem(CACHE_KEYS.RUNS_TIMESTAMP);
+    const cachedDate = sessionStorage.getItem(CACHE_KEYS.RUNS_DATE);
+    
+    if (!cached || !timestamp || !cachedDate) return null;
+    
+    if (cachedDate !== date) {
+        console.log(`[CACHE MISS] Different date (cached: ${cachedDate}, requested: ${date})`);
+        return null;
+    }
+    
+    if (isCacheValid(timestamp)) {
+        console.log(`[CACHE HIT] Using cached runs for ${date}: ${cached}`);
+        return parseInt(cached);
+    }
+    
+    console.log(`[CACHE EXPIRED] Runs cache expired for ${date}`);
+    return null;
+}
+
+function setCachedRuns(date: string, runs: number): void {
+    sessionStorage.setItem(CACHE_KEYS.RUNS, runs.toString());
+    sessionStorage.setItem(CACHE_KEYS.RUNS_TIMESTAMP, Date.now().toString());
+    sessionStorage.setItem(CACHE_KEYS.RUNS_DATE, date);
+    console.log(`[CACHED] Runs for ${date}: ${runs}`);
 }
 
 function clearCache(): void {
-    teamIdCache = null;
-    runsCache = null;
-    console.log('Cache cleared');
+    sessionStorage.removeItem(CACHE_KEYS.TEAM_ID);
+    sessionStorage.removeItem(CACHE_KEYS.TEAM_ID_TIMESTAMP);
+    sessionStorage.removeItem(CACHE_KEYS.RUNS);
+    sessionStorage.removeItem(CACHE_KEYS.RUNS_TIMESTAMP);
+    sessionStorage.removeItem(CACHE_KEYS.RUNS_DATE);
+    console.log('[CACHE] All cache cleared');
 }
 
 // Headers including your API key for authentication
@@ -130,12 +173,12 @@ function getDateDaysAgo(daysAgo: number): string {
     return getDateWithOffset(-daysAgo);
 }
 
-// --- Step 1: Get the St. Louis Cardinals team ID (with caching + deduplication) ---
+// --- Step 1: Get the St. Louis Cardinals team ID (with sessionStorage caching + deduplication) ---
 async function getCardinalsTeamId(): Promise<number> {
-    // Check cache first
-    if (isCacheValid(teamIdCache)) {
-        console.log(`[CACHE HIT] Using cached team ID: ${teamIdCache!.data}`);
-        return teamIdCache!.data;
+    // Check sessionStorage cache first
+    const cachedId = getCachedTeamId();
+    if (cachedId !== null) {
+        return cachedId;
     }
     
     // If there's already a pending request, return that promise
@@ -162,12 +205,9 @@ async function getCardinalsTeamId(): Promise<number> {
         
         if (!cardinals) throw new Error('St. Louis Cardinals team not found');
         
-        teamIdCache = {
-            data: cardinals.id,
-            timestamp: Date.now()
-        };
-        
-        console.log(`[CACHED] ${cardinals.display_name} (ID: ${cardinals.id})`);
+        // Store in sessionStorage
+        setCachedTeamId(cardinals.id);
+        console.log(`Found: ${cardinals.display_name} (ID: ${cardinals.id})`);
         return cardinals.id;
     })();
     
@@ -178,12 +218,12 @@ async function getCardinalsTeamId(): Promise<number> {
     }
 }
 
-// --- Step 2: Fetch games and calculate total runs (with caching + deduplication) ---
+// --- Step 2: Fetch games and calculate total runs (with sessionStorage caching + deduplication) ---
 async function getCardinalsRunsForDate(teamId: number, date: string): Promise<number> {
-    // Check cache first - only valid if it's for the same date
-    if (isCacheValid(runsCache) && runsCache?.date === date) {
-        console.log(`[CACHE HIT] Using cached runs for ${date}: ${runsCache!.data}`);
-        return runsCache!.data;
+    // Check sessionStorage cache first
+    const cachedRuns = getCachedRuns(date);
+    if (cachedRuns !== null) {
+        return cachedRuns;
     }
     
     // If there's already a pending request for the same date, return that promise
@@ -210,11 +250,7 @@ async function getCardinalsRunsForDate(teamId: number, date: string): Promise<nu
         
         if (data.data.length === 0) {
             console.log(`No games found for the Cardinals on ${date}.`);
-            runsCache = {
-                data: 0,
-                timestamp: Date.now(),
-                date: date
-            };
+            setCachedRuns(date, 0);
             return 0;
         }
         
@@ -234,13 +270,9 @@ async function getCardinalsRunsForDate(teamId: number, date: string): Promise<nu
             console.log(`Game vs ${opponent}: Cardinals scored ${cardinalsRuns} runs`);
         }
         
-        runsCache = {
-            data: totalRuns,
-            timestamp: Date.now(),
-            date: date
-        };
-        
-        console.log(`🏆 TOTAL RUNS: ${totalRuns} (cached until ${new Date(Date.now() + CACHE_DURATION_MS).toLocaleTimeString()})`);
+        // Store in sessionStorage
+        setCachedRuns(date, totalRuns);
+        console.log(`\n🏆 TOTAL RUNS for St. Louis Cardinals on ${date}: ${totalRuns}`);
         return totalRuns;
     })();
     
@@ -266,12 +298,17 @@ export async function Main(daysOffset: number = OFFSET): Promise<number> {
     }
 }
 
-// Export cache utilities
-export function getCacheStatus(): { teamIdCached: boolean; runsCached: boolean; cacheDurationMs: number } {
+// Export cache utilities for debugging/monitoring
+export function getCacheStatus(): { teamIdCached: boolean; runsCached: boolean; cacheDurationMs: number; runsDate?: string } {
+    const teamIdTimestamp = sessionStorage.getItem(CACHE_KEYS.TEAM_ID_TIMESTAMP);
+    const runsTimestamp = sessionStorage.getItem(CACHE_KEYS.RUNS_TIMESTAMP);
+    const runsDate = sessionStorage.getItem(CACHE_KEYS.RUNS_DATE) || undefined;
+    
     return {
-        teamIdCached: isCacheValid(teamIdCache),
-        runsCached: isCacheValid(runsCache),
-        cacheDurationMs: CACHE_DURATION_MS
+        teamIdCached: isCacheValid(teamIdTimestamp),
+        runsCached: isCacheValid(runsTimestamp),
+        cacheDurationMs: CACHE_DURATION_MS,
+        runsDate
     };
 }
 
@@ -279,6 +316,7 @@ export function forceClearCache(): void {
     clearCache();
 }
 
+// Optional: Export individual functions for testing or reuse
 export { 
     getCardinalsTeamId, 
     getCardinalsRunsForDate, 
