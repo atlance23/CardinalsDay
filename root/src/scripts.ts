@@ -25,6 +25,11 @@ interface RunsCache extends CacheEntry<number> {
 let teamIdCache: TeamsCache | null = null;
 let runsCache: RunsCache | null = null;
 
+// --- Request Deduplication (Prevents multiple simultaneous requests) ---
+let pendingTeamIdRequest: Promise<number> | null = null;
+let pendingRunsRequest: Promise<number> | null = null;
+let pendingRunsDate: string | null = null;
+
 // --- Cache Helper Functions ---
 function isCacheValid<T extends CacheEntry<any>>(cache: T | null): boolean {
     if (!cache) return false;
@@ -37,18 +42,6 @@ function clearCache(): void {
     runsCache = null;
     console.log('Cache cleared');
 }
-
-// Optional: Clear cache after 1 minute automatically
-setInterval(() => {
-    if (teamIdCache && !isCacheValid(teamIdCache)) {
-        teamIdCache = null;
-        console.log('Team ID cache expired');
-    }
-    if (runsCache && !isCacheValid(runsCache)) {
-        runsCache = null;
-        console.log('Runs cache expired');
-    }
-}, CACHE_DURATION_MS);
 
 // Headers including your API key for authentication
 const headers: HeadersInit = {
@@ -110,7 +103,6 @@ interface GamesResponse {
 }
 
 // --- Core Date Helper: Get date with offset in YYYY-MM-DD format in CST ---
-// daysOffset: -1 for yesterday, -2 for day before yesterday, 0 for today, etc.
 function getDateWithOffset(daysOffset: number = 0): string {
     const targetDate: Date = new Date();
     targetDate.setDate(targetDate.getDate() + daysOffset);
@@ -138,98 +130,129 @@ function getDateDaysAgo(daysAgo: number): string {
     return getDateWithOffset(-daysAgo);
 }
 
-// --- Step 1: Get the St. Louis Cardinals team ID (with caching) ---
+// --- Step 1: Get the St. Louis Cardinals team ID (with caching + deduplication) ---
 async function getCardinalsTeamId(): Promise<number> {
     // Check cache first
     if (isCacheValid(teamIdCache)) {
-        console.log(`Using cached team ID: ${teamIdCache!.data}`);
+        console.log(`[CACHE HIT] Using cached team ID: ${teamIdCache!.data}`);
         return teamIdCache!.data;
     }
     
-    console.log('Cache expired or empty. Fetching team list from API...');
-    const url: string = `${BASE_URL}/mlb/v1/teams`;
+    // If there's already a pending request, return that promise
+    if (pendingTeamIdRequest) {
+        console.log('[DEDUPE] Waiting for pending team ID request...');
+        return pendingTeamIdRequest;
+    }
     
-    const response: Response = await fetch(url, { headers });
-    if (!response.ok) throw new Error(`Teams API error: ${response.status}`);
+    console.log('[CACHE MISS] Fetching team list from API...');
     
-    const data: TeamsResponse = await response.json();
+    // Create new request and store the promise
+    pendingTeamIdRequest = (async () => {
+        const url: string = `${BASE_URL}/mlb/v1/teams`;
+        const response: Response = await fetch(url, { headers });
+        if (!response.ok) throw new Error(`Teams API error: ${response.status}`);
+        
+        const data: TeamsResponse = await response.json();
+        
+        const cardinals: MLBTeam | undefined = data.data.find((team: MLBTeam) => 
+            team.name === 'Cardinals' || 
+            team.location === 'St. Louis' ||
+            team.display_name.includes('Cardinals')
+        );
+        
+        if (!cardinals) throw new Error('St. Louis Cardinals team not found');
+        
+        teamIdCache = {
+            data: cardinals.id,
+            timestamp: Date.now()
+        };
+        
+        console.log(`[CACHED] ${cardinals.display_name} (ID: ${cardinals.id})`);
+        return cardinals.id;
+    })();
     
-    // Find the team where the name or location includes 'Cardinals' or 'St. Louis'
-    const cardinals: MLBTeam | undefined = data.data.find((team: MLBTeam) => 
-        team.name === 'Cardinals' || 
-        team.location === 'St. Louis' ||
-        team.display_name.includes('Cardinals')
-    );
-    
-    if (!cardinals) throw new Error('St. Louis Cardinals team not found');
-    
-    // Store in cache
-    teamIdCache = {
-        data: cardinals.id,
-        timestamp: Date.now()
-    };
-    
-    console.log(`Found and cached: ${cardinals.display_name} (ID: ${cardinals.id})`);
-    return cardinals.id;
+    try {
+        return await pendingTeamIdRequest;
+    } finally {
+        pendingTeamIdRequest = null; // Clear after request completes
+    }
 }
 
-// --- Step 2: Fetch games and calculate total runs for the Cardinals (with caching) ---
+// --- Step 2: Fetch games and calculate total runs (with caching + deduplication) ---
 async function getCardinalsRunsForDate(teamId: number, date: string): Promise<number> {
     // Check cache first - only valid if it's for the same date
     if (isCacheValid(runsCache) && runsCache?.date === date) {
-        console.log(`Using cached runs for ${date}: ${runsCache!.data}`);
+        console.log(`[CACHE HIT] Using cached runs for ${date}: ${runsCache!.data}`);
         return runsCache!.data;
     }
     
-    console.log(`Cache expired or different date. Fetching games for ${date} from API...`);
-    const url: string = `${BASE_URL}/mlb/v1/games?dates[]=${date}&team_ids[]=${teamId}`;
+    // If there's already a pending request for the same date, return that promise
+    if (pendingRunsRequest && pendingRunsDate === date) {
+        console.log(`[DEDUPE] Waiting for pending runs request for ${date}...`);
+        return pendingRunsRequest;
+    }
     
-    const response: Response = await fetch(url, { headers });
-    if (!response.ok) throw new Error(`Games API error: ${response.status}`);
+    console.log(`[CACHE MISS] Fetching games for ${date} from API...`);
     
-    const data: GamesResponse = await response.json();
-    
-    if (data.data.length === 0) {
-        console.log(`No games found for the Cardinals on ${date}.`);
-        // Cache the zero result as well to prevent repeated queries
+    // Create new request and store the promise
+    pendingRunsDate = date;
+    pendingRunsRequest = (async () => {
+        const url: string = `${BASE_URL}/mlb/v1/games?dates[]=${date}&team_ids[]=${teamId}`;
+        const response: Response = await fetch(url, { headers });
+        
+        // Handle rate limiting specifically
+        if (response.status === 429) {
+            throw new Error('Rate limit exceeded. Please wait a moment before refreshing.');
+        }
+        if (!response.ok) throw new Error(`Games API error: ${response.status}`);
+        
+        const data: GamesResponse = await response.json();
+        
+        if (data.data.length === 0) {
+            console.log(`No games found for the Cardinals on ${date}.`);
+            runsCache = {
+                data: 0,
+                timestamp: Date.now(),
+                date: date
+            };
+            return 0;
+        }
+        
+        let totalRuns: number = 0;
+        
+        for (const game of data.data) {
+            const isHomeTeam: boolean = game.home_team.id === teamId;
+            const cardinalsRuns: number = isHomeTeam 
+                ? game.home_team_data.runs 
+                : game.away_team_data.runs;
+            
+            totalRuns += cardinalsRuns;
+            const opponent: string = isHomeTeam 
+                ? game.away_team.name 
+                : game.home_team.name;
+            
+            console.log(`Game vs ${opponent}: Cardinals scored ${cardinalsRuns} runs`);
+        }
+        
         runsCache = {
-            data: 0,
+            data: totalRuns,
             timestamp: Date.now(),
             date: date
         };
-        return 0;
-    }
-    
-    // Calculate total runs scored by the Cardinals across all games on this date
-    let totalRuns: number = 0;
-    
-    for (const game of data.data) {
-        // Determine if Cardinals are home or away
-        const isHomeTeam: boolean = game.home_team.id === teamId;
-        const cardinalsRuns: number = isHomeTeam 
-            ? game.home_team_data.runs 
-            : game.away_team_data.runs;
         
-        totalRuns += cardinalsRuns;
-        const opponent: string = isHomeTeam 
-            ? game.away_team.name 
-            : game.home_team.name;
-        
-        console.log(`Game vs ${opponent}: Cardinals scored ${cardinalsRuns} runs`);
+        console.log(`🏆 TOTAL RUNS: ${totalRuns} (cached until ${new Date(Date.now() + CACHE_DURATION_MS).toLocaleTimeString()})`);
+        return totalRuns;
+    })();
+    
+    try {
+        return await pendingRunsRequest;
+    } finally {
+        pendingRunsRequest = null;
+        pendingRunsDate = null;
     }
-    
-    // Store in cache
-    runsCache = {
-        data: totalRuns,
-        timestamp: Date.now(),
-        date: date
-    };
-    
-    console.log(`\n🏆 TOTAL RUNS for St. Louis Cardinals on ${date}: ${totalRuns} (cached for 1 minute)`);
-    return totalRuns;
 }
 
-// --- Additional exported functions for flexibility ---
+// --- Main exported function ---
 export async function Main(daysOffset: number = OFFSET): Promise<number> {
     try {
         const teamId: number = await getCardinalsTeamId();
@@ -243,7 +266,7 @@ export async function Main(daysOffset: number = OFFSET): Promise<number> {
     }
 }
 
-// Export cache utilities for debugging/monitoring
+// Export cache utilities
 export function getCacheStatus(): { teamIdCached: boolean; runsCached: boolean; cacheDurationMs: number } {
     return {
         teamIdCached: isCacheValid(teamIdCache),
@@ -256,7 +279,6 @@ export function forceClearCache(): void {
     clearCache();
 }
 
-// Optional: Export individual functions for testing or reuse
 export { 
     getCardinalsTeamId, 
     getCardinalsRunsForDate, 
